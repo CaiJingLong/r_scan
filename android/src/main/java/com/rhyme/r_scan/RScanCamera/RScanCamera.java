@@ -5,20 +5,15 @@ import android.app.Activity;
 import android.content.Context;
 import android.graphics.ImageFormat;
 import android.graphics.SurfaceTexture;
-import android.hardware.Camera;
 import android.hardware.camera2.CameraAccessException;
 import android.hardware.camera2.CameraCaptureSession;
-import android.hardware.camera2.CameraCharacteristics;
 import android.hardware.camera2.CameraDevice;
 import android.hardware.camera2.CameraManager;
 import android.hardware.camera2.CameraMetadata;
 import android.hardware.camera2.CaptureRequest;
 import android.media.Image;
 import android.media.ImageReader;
-import android.media.MediaRecorder;
-import android.os.Build;
 import android.os.Handler;
-import android.os.Looper;
 import android.util.Log;
 import android.util.Size;
 import android.view.Surface;
@@ -31,7 +26,6 @@ import com.google.zxing.NotFoundException;
 import com.google.zxing.PlanarYUVLuminanceSource;
 import com.google.zxing.Result;
 import com.google.zxing.common.GlobalHistogramBinarizer;
-import com.google.zxing.common.HybridBinarizer;
 
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
@@ -48,6 +42,7 @@ import io.flutter.view.TextureRegistry;
 
 import static com.rhyme.r_scan.RScanCamera.CameraUtils.computeBestPreviewSize;
 
+@SuppressWarnings("ALL")
 class RScanCamera {
     private final String TAG = "RScanCamera";
 
@@ -310,7 +305,60 @@ class RScanCamera {
 //        }
     }
 
-    private Result decodeImage(Image image) {
+    private static byte[] yuv_420_888toNV21(Image image) {
+        byte[] nv21;
+        ByteBuffer yBuffer = image.getPlanes()[0].getBuffer();
+        ByteBuffer uBuffer = image.getPlanes()[1].getBuffer();
+        ByteBuffer vBuffer = image.getPlanes()[2].getBuffer();
+
+        int ySize = yBuffer.remaining();
+        int uSize = uBuffer.remaining();
+        int vSize = vBuffer.remaining();
+
+        nv21 = new byte[ySize + uSize + vSize];
+
+        //U and V are swapped
+        yBuffer.get(nv21, 0, ySize);
+        vBuffer.get(nv21, ySize, vSize);
+        uBuffer.get(nv21, ySize + vSize, uSize);
+
+        return nv21;
+    }
+
+    private PlanarYUVLuminanceSource createRotateSource(Image image) {
+        ByteBuffer buffer = image.getPlanes()[0].getBuffer();
+//        byte[] data = buffer.array();
+        byte[] data = yuv_420_888toNV21(image);
+        byte[] array = new byte[buffer.remaining()];
+        buffer.get(array);
+
+        //图片宽度
+        int width = image.getWidth();
+        //图片高度
+        int height = image.getHeight();
+
+        byte[] rotatedData = new byte[data.length];
+        for (int y = 0; y < height; y++) {
+            for (int x = 0; x < width; x++)
+                rotatedData[x * height + height - y - 1] = data[x + y * width];
+        }
+        int tmp = width; // Here we are swapping, that's the difference to #11
+        width = height;
+        height = tmp;
+
+        buffer.clear();
+
+        return new PlanarYUVLuminanceSource(rotatedData,
+                width,
+                height,
+                0,
+                0,
+                width,
+                height,
+                false);
+    }
+
+    private PlanarYUVLuminanceSource createSource(Image image) {
         ByteBuffer buffer = image.getPlanes()[0].getBuffer();
         byte[] array = new byte[buffer.remaining()];
         buffer.get(array);
@@ -322,7 +370,7 @@ class RScanCamera {
 
         setAutoOpenFlash(width, height, array);
 
-        PlanarYUVLuminanceSource source = new PlanarYUVLuminanceSource(array,
+        return new PlanarYUVLuminanceSource(array,
                 width,
                 height,
                 0,
@@ -330,7 +378,14 @@ class RScanCamera {
                 width,
                 height,
                 false);
+
+    }
+
+    private Result decodeImage(Image image) {
+//        PlanarYUVLuminanceSource source = createSource(image);
+        PlanarYUVLuminanceSource source = createRotateSource(image);
         BinaryBitmap binaryBitmap = new BinaryBitmap(new GlobalHistogramBinarizer(source));
+
         try {
             return reader.decode(binaryBitmap);
         } catch (Exception e) {
@@ -357,7 +412,7 @@ class RScanCamera {
 //            }
 //          Log.d(TAG, "analyze: error ");
         } finally {
-            buffer.clear();
+//            buffer.clear();
             reader.reset();
         }
         return null;
